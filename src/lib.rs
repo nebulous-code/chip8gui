@@ -1,8 +1,9 @@
 #![crate_name = "chip8gui"]
 
+use std::fs;
 use std::path::Path;
 
-use chip8sys::chip8::Chip8Sys;
+use chip8sys::chip8::{Chip8KeyMask, Chip8Sys, DISPLAY_PIXELS};
 use minifb::{Key, ScaleMode, Window, WindowOptions};
 use rodio::source::{SineWave, Source};
 
@@ -47,12 +48,10 @@ pub fn run() {
         .join("../roms")
         .join(rom_name);
 
-    // This loads the selected ROM into emulator memory.
-    game.load_rom(
-        file_path
-            .to_str()
-            .expect("rom path should be valid unicode"),
-    );
+    // This reads the ROM file into memory.
+    let rom_bytes = fs::read(&file_path).expect("rom file should be readable");
+    // This loads the ROM bytes into emulator memory.
+    game.load_rom_bytes(&rom_bytes);
 
     // This sets up audio output for the beep tone.
     let stream_handle =
@@ -83,13 +82,13 @@ pub fn run() {
         // This updates the keypad state from keyboard input.
         check_key_input(&mut game, &window);
         // This converts the framebuffer to a display buffer.
-        buffer = display_buffer(&mut game);
+        buffer = display_buffer(&game);
         // This draws the buffer to the window.
         window.update_with_buffer(&buffer, WIDTH, HEIGHT).unwrap();
-        // This advances the emulator state.
-        let _ = game.run();
+        // This advances the emulator state by one CPU cycle.
+        let _ = game.tick(1);
         // This toggles the beep tone based on the sound flag.
-        if game.is_playing_sound {
+        if game.is_sound_playing() {
             sink.append(SineWave::new(440.0).repeat_infinite());
         } else {
             sink.stop();
@@ -104,32 +103,68 @@ pub fn run() {
 /// Returns: none.
 fn check_key_input(chip8: &mut Chip8Sys, window: &Window) {
     // This mapping follows the standard Chip-8 keypad layout.
-    chip8.keys[0] = window.is_key_down(Key::X);
-    chip8.keys[1] = window.is_key_down(Key::Key1);
-    chip8.keys[2] = window.is_key_down(Key::Key2);
-    chip8.keys[3] = window.is_key_down(Key::Key3);
-    chip8.keys[4] = window.is_key_down(Key::Q);
-    chip8.keys[5] = window.is_key_down(Key::W);
-    chip8.keys[6] = window.is_key_down(Key::E);
-    chip8.keys[7] = window.is_key_down(Key::A);
-    chip8.keys[8] = window.is_key_down(Key::S);
-    chip8.keys[9] = window.is_key_down(Key::D);
-    chip8.keys[0xA] = window.is_key_down(Key::Z);
-    chip8.keys[0xB] = window.is_key_down(Key::C);
-    chip8.keys[0xC] = window.is_key_down(Key::Key4);
-    chip8.keys[0xD] = window.is_key_down(Key::R);
-    chip8.keys[0xE] = window.is_key_down(Key::F);
-    chip8.keys[0xF] = window.is_key_down(Key::V);
+    // This mask stores the pressed keys in a 16-bit value.
+    let mut mask: Chip8KeyMask = 0;
+    if window.is_key_down(Key::X) {
+        mask |= 1u16 << 0;
+    }
+    if window.is_key_down(Key::Key1) {
+        mask |= 1u16 << 1;
+    }
+    if window.is_key_down(Key::Key2) {
+        mask |= 1u16 << 2;
+    }
+    if window.is_key_down(Key::Key3) {
+        mask |= 1u16 << 3;
+    }
+    if window.is_key_down(Key::Q) {
+        mask |= 1u16 << 4;
+    }
+    if window.is_key_down(Key::W) {
+        mask |= 1u16 << 5;
+    }
+    if window.is_key_down(Key::E) {
+        mask |= 1u16 << 6;
+    }
+    if window.is_key_down(Key::A) {
+        mask |= 1u16 << 7;
+    }
+    if window.is_key_down(Key::S) {
+        mask |= 1u16 << 8;
+    }
+    if window.is_key_down(Key::D) {
+        mask |= 1u16 << 9;
+    }
+    if window.is_key_down(Key::Z) {
+        mask |= 1u16 << 0xA;
+    }
+    if window.is_key_down(Key::C) {
+        mask |= 1u16 << 0xB;
+    }
+    if window.is_key_down(Key::Key4) {
+        mask |= 1u16 << 0xC;
+    }
+    if window.is_key_down(Key::R) {
+        mask |= 1u16 << 0xD;
+    }
+    if window.is_key_down(Key::F) {
+        mask |= 1u16 << 0xE;
+    }
+    if window.is_key_down(Key::V) {
+        mask |= 1u16 << 0xF;
+    }
+    // This updates the emulator keypad using the boundary API.
+    chip8.set_keys_mask(mask);
 }
 
 /// This function converts the Chip-8 framebuffer into a scaled display buffer.
 /// Arguments:
 /// - chip8: The emulator instance that owns the framebuffer.
 /// Returns: A vector of packed pixel colors for the window.
-pub fn display_buffer(chip8: &mut Chip8Sys) -> Vec<u32> {
-    // This uses 8 because each byte stores 8 pixels.
+pub fn display_buffer(chip8: &Chip8Sys) -> Vec<u32> {
+    // This uses the fixed Chip-8 pixel count to calculate the scale factor.
     // This uses a square root because the scale is applied to width and height.
-    let scaler = ((WIDTH * HEIGHT) as f64 / (chip8.frame_buffer.len() * 8) as f64)
+    let scaler = ((WIDTH * HEIGHT) as f64 / DISPLAY_PIXELS as f64)
         .sqrt()
         .floor() as usize;
     // println!("scaler: {scaler}");
@@ -140,7 +175,7 @@ pub fn display_buffer(chip8: &mut Chip8Sys) -> Vec<u32> {
 
     let mut results = Vec::new();
     let mut result: Vec<u32> = Vec::new();
-    for (i, pixel) in chip8.frame_buffer.iter().enumerate() {
+    for (i, pixel) in chip8.framebuffer_packed().iter().enumerate() {
         let mut power_2 = 0b1000_0000;
         for _ in 0..8 {
             if pixel & power_2 == power_2 {
