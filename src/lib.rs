@@ -2,8 +2,9 @@
 
 use std::fs;
 use std::path::Path;
+use std::time::Instant;
 
-use chip8sys::chip8::{Chip8KeyMask, Chip8Sys, DISPLAY_PIXELS};
+use chip8sys::chip8::{Chip8KeyMask, Chip8Sys, DISPLAY_PIXELS, TimerMode};
 use minifb::{Key, ScaleMode, Window, WindowOptions};
 use rodio::source::{SineWave, Source};
 
@@ -15,6 +16,14 @@ const PIXEL_COLOR_ON: u32 = 0x80B039;
 pub const WIDTH: usize = 640  * 2;
 /// This constant defines the window height in pixels.
 pub const HEIGHT: usize = 320 * 2;
+/// This constant defines the target render rate in frames per second.
+const TARGET_FPS: usize = 60;
+/// This constant defines the target CPU speed in cycles per second.
+const CYCLES_PER_SECOND: f64 = 1000.0;
+/// This constant caps CPU catch-up to keep the UI responsive.
+const MAX_CYCLES_PER_FRAME: u32 = 200;
+/// This constant defines the timer tick rate in Hertz.
+const TIMER_HZ: f64 = 60.0;
 /// This constant controls whether FX55 and FX65 increment the index register.
 pub const INC_INDEX: bool = true;
 /// This constant controls whether some opcodes reset register VF.
@@ -30,6 +39,8 @@ pub const MOD_VX_IN_PLACE: bool = false;
 pub fn run() {
     // This creates a new emulator instance.
     let mut game = Chip8Sys::new_chip_8();
+    // This configures the emulator to use externally driven timers.
+    game.set_timer_mode(TimerMode::External);
 
     // This selects a ROM file name to load from disk.
     // let rom_name = "1-chip8-logo.ch8";
@@ -73,20 +84,64 @@ pub fn run() {
     )
     .expect("Unable to create the window");
 
-    // This caps the frame rate to reduce CPU usage.
-    window.set_target_fps(240);
+    // This caps the render rate to reduce CPU usage.
+    window.set_target_fps(TARGET_FPS);
+
+    // This tracks the wall-clock time between frames.
+    let mut last_frame = Instant::now();
+    // This accumulator tracks CPU cycles that still need to run.
+    let mut cpu_accumulator = 0.0;
+    // This accumulator tracks time for rendering at a steady rate.
+    let mut frame_accumulator = 0.0;
+    // This accumulator tracks time for timer updates at 60Hz.
+    let mut timer_accumulator = 0.0;
+    // This value represents the target time per frame.
+    let frame_time = 1.0 / TARGET_FPS as f64;
 
     // This loop runs until the window closes or the user exits.
-    let mut buffer;
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        // This measures the time since the last loop iteration.
+        let now = Instant::now();
+        let delta_seconds = now.duration_since(last_frame).as_secs_f64();
+        last_frame = now;
+
         // This updates the keypad state from keyboard input.
         check_key_input(&mut game, &window);
-        // This converts the framebuffer to a display buffer.
-        buffer = display_buffer(&game);
-        // This draws the buffer to the window.
-        window.update_with_buffer(&buffer, WIDTH, HEIGHT).unwrap();
-        // This advances the emulator state by one CPU cycle.
-        let _ = game.tick(1);
+
+        // This accumulates CPU work based on elapsed time.
+        cpu_accumulator += delta_seconds * CYCLES_PER_SECOND;
+        // This accumulates time toward the next render.
+        frame_accumulator += delta_seconds;
+        // This accumulates time toward the next timer tick.
+        timer_accumulator += delta_seconds * TIMER_HZ;
+
+        // This advances the delay and sound timers at 60Hz.
+        let timer_ticks = timer_accumulator.floor() as u32;
+        if timer_ticks > 0 {
+            game.tick_timers(timer_ticks);
+            timer_accumulator -= timer_ticks as f64;
+        }
+
+        // This advances the emulator state using the accumulated cycles.
+        let cycles_to_run = cpu_accumulator.floor() as u32;
+        if cycles_to_run > 0 {
+            let capped_cycles = cycles_to_run.min(MAX_CYCLES_PER_FRAME);
+            let _ = game.tick(capped_cycles);
+            cpu_accumulator -= capped_cycles as f64;
+        }
+
+        // This renders at the target frame rate to avoid flicker.
+        if frame_accumulator >= frame_time {
+            frame_accumulator -= frame_time;
+            // This converts the framebuffer to a display buffer.
+            let buffer = display_buffer(&game);
+            // This draws the buffer to the window.
+            window.update_with_buffer(&buffer, WIDTH, HEIGHT).unwrap();
+        } else {
+            // This updates the window to keep input responsive.
+            window.update();
+        }
+
         // This toggles the beep tone based on the sound flag.
         if game.is_sound_playing() {
             sink.append(SineWave::new(440.0).repeat_infinite());
