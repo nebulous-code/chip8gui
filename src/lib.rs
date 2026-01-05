@@ -30,7 +30,7 @@ fn main() {
     // let file_path = "roms/6-keypad.ch8";
     // let file_path = "roms/walking_man.ch8";
 
-    game.load_rom(String::from(file_path));
+    game.load_rom(&String::from(file_path));
 
     // game.memory = [0; 0x1000];
     // Old way

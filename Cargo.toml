@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-chip8sys = { path = "../../chip8/chip8sys" }
+chip8sys = { path = "../chip8/chip8sys" }
 minifb = "0.28"
 rodio = "0.21.1"
 
